@@ -3,9 +3,16 @@
 import os, os.path
 import random
 import httplib, urllib,urllib2
-import re
 
-
+"""
+To Do:
+-Add user settings page (lastfm info, play after search, default # for add more songs, default # for initial search, etc)
+-Clean up code and add comments
+-Add "Do you mean this artist?" If no results are found on first search
+-Setup new layout for player with side bars for favorite stations and recently played
+-Add User DB to add favorite songs and saved stations
+-Look into how to like songs to lastfm and stream to lastfm (probably will require javascript)
+"""
 def index():
 	form = SQLFORM.factory(Field('artist',
                                  label='Artist',
@@ -34,13 +41,11 @@ def play():
 		session.printrows = []
 		session.num = 15
 		searchlastfm = mainvar.addSongs(artist, song)
-		print session.printrows
 		return dict(printrows=searchlastfm, form=form)
 	if artist and not song:
 		session.printrows = []
 		session.num = 15
 		searchlastfm = mainvar.addArtistSongs(artist)
-		print "Started from the bottom", searchlastfm
 		return dict(printrows=searchlastfm, form=form)
 	else:
 		return "nothing found"
@@ -54,7 +59,7 @@ def stream():
 def lfm_like():
 	return dict()
 def lfm_add():
-	print "STARTING......................."
+	print "Adding 5 Songs!"
 	session.num += 5
 	artist = session.get('artist', None)
 	print "Adding artist: %s from lfm_add" % artist
@@ -88,7 +93,7 @@ def print_mp3(pattern, dir, files):
 					print "Missing key:"
 					print os.path.join(dir, filename)
 				try:
-					db.lastfm.insert(Artist=artist, Track=track, Dir=os.path.join(dir, filename))
+					db.lastfm.insert(Artist=artist.encode('utf-8'), Track=track.encode('utf-8'), Dir=os.path.join(dir, filename))
 					print "adding %s" % os.path.join(dir, filename)
 				except:
 					e = sys.exc_info()[0]
@@ -103,7 +108,7 @@ def files():
 		os.path.walk(form.vars.music_dir, print_mp3, '*.mp3')
 	grid = SQLFORM.grid(db.lastfm)
 	return dict(form=form, grid=grid)
-
+from xml.dom import minidom
 class Main:
 	def lastfmsearch(self, artist, track):
 		self.artist = artist
@@ -111,13 +116,11 @@ class Main:
 		apiPath = "http://ws.audioscrobbler.com/2.0/?api_key=9ab0c1e4d83f21270341c70068d02d44"
 		apiMethod = "&method=track.getsimilar"
 		# The url in which to use
-		Base_URL = apiPath + apiMethod + "&artist=" + artist + "&track=" + track 
-		#print Base_URL
+		Base_URL = apiPath + apiMethod + "&artist=" + artist + "&track=" + track.decode('utf-8')
 		WebSock = urllib.urlopen(Base_URL)  # Opens a 'Socket' to URL
 		WebHTML = WebSock.read()            # Reads Contents of URL and saves to Variable
 		WebSock.close()                     # Closes connection to url
-		#print WebHTML
-		similarTracks = re.findall('<track>.+?<name>(.+?)</name>.+?<artist>.+?<name>(.+?)</name>.+?</artist>.+?<image size="extralarge">(.+?)</image>.+?</track>', WebHTML, re.S)
+		similarTracks = mainvar.xmlparse(WebHTML, "similartracks")
 		random.shuffle(similarTracks)
 		countTracks = len(similarTracks)
 		print "[LFM PLG(PM)] Count: " + str(countTracks)
@@ -128,62 +131,70 @@ class Main:
 		self.artist = artist
 		apiPath = "http://ws.audioscrobbler.com/2.0/?api_key=9ab0c1e4d83f21270341c70068d02d44"
 		apiMethod = "&method=artist.getTopTracks"
-		# The url in which to use
 		Base_URL = apiPath + apiMethod + "&artist=" + artist
-		#print Base_URL
 		WebSock = urllib.urlopen(Base_URL)  # Opens a 'Socket' to URL
 		WebHTML = WebSock.read()            # Reads Contents of URL and saves to Variable
 		WebSock.close()                     # Closes connection to url
-		#print WebHTML
-		similarTracks = re.findall('<track.+?>.+?<name>(.+?)</name>.+?<artist>.+?<name>(.+?)</name>.+?</artist>.+?<image size="extralarge">(.+?)</image>.+?</track>', WebHTML, re.S)
+		similarTracks = mainvar.xmlparse(WebHTML, "toptracks")
 		random.shuffle(similarTracks)
-		print "from addArtistSongs: ", similarTracks
 		artist = similarTracks[0][1]
 		song = similarTracks[0][0]
 		print "Searching for %s and %s from addArtistSongs" % (artist,song)
 		return mainvar.addSongs(artist,song)
-#		print "[LFM PLG(PM)] Count: " + str(countTracks)
+	def xmlparse(self, xml, xml_attrib):
+		xml_x = minidom.parseString(xml)
+		xml_lastfm = xml_x.getElementsByTagName("lfm")[0]
+		xml_similarTracks = xml_lastfm.getElementsByTagName(xml_attrib)[0]
+		xml_tracks = xml_similarTracks.getElementsByTagName("track")
+		similarTracks = []
+		for track in xml_tracks:
+			xml_trackname = track.getElementsByTagName("name")[0].firstChild.data
+			xml_artist = track.getElementsByTagName("artist")[0]
+			xml_artistname = xml_artist.getElementsByTagName("name")[0].firstChild.data
+			try:
+				xml_image = track.getElementsByTagName("image")[3].firstChild.data
+				similarTracks.append([xml_trackname, xml_artistname,  xml_image])
+			except:
+				print "Issue with %s" % xml_artistname
+		return similarTracks
 	def addSongs(self, artist, song):
 		self.artist = artist
 		self.song = song
-		print "if print rows greater than %s" % session.num
 		if len(session.printrows) > session.num or len(session.printrows) == session.num:
 			print "Starting over from addSongs"
-			print len(session.printrows)
 			session.printrows = []
-			print session.printrows
 			mainvar.addSongs(artist,song)
-		print "Searching %s - %s and print rows is \n %s" % (artist, song, session.printrows) 
-		for similarTrackName, similarArtistName, artistArt in mainvar.lastfmsearch(artist,song):
-			similarTrackName = similarTrackName.replace("+"," ").replace("("," ").replace(")"," ").replace("&quot","''").replace("'","''").replace("&amp;","and")
-			similarArtistName = similarArtistName.replace("+"," ").replace("("," ").replace(")"," ").replace("&quot","''").replace("'","''").replace("&amp;","and")
-			row = db.executesql('SELECT * FROM lastfm Where Artist=? AND Track LIKE ?', (similarArtistName.decode('utf-8'), "%"+similarTrackName.decode('utf-8')+"%"))
-#			print "addSongs searching for %s and %s" % (similarArtistName, similarTrackName)
-			if row and session.printrows==[]:
-				row[0] = row[0] + (artistArt,)
-				print "adding %s from IF" % row
-				session.printrows.append(row)
-				print len(session.printrows)
-				print "#I am after row!"
-			if row and not session.printrows==[]:
-				checklines = []
-				for line in session.printrows:
-					checklines.append(int(line[0][0]))
-				if int(row[0][0]) not in checklines:
-					row[0] = row[0] + (artistArt,)
-					print "adding %s" % row
-					session.printrows.append(row)
-					print len(session.printrows)
-			if len(session.printrows) == session.num:
-				break
+		print "Searching %s - %s" % (artist, song) 
+		for line in mainvar.lastfmsearch(artist,song):
+			if len(line) == 3:
+				similarTrackName = line[0]
+				similarArtistName = line[1]
+				artistArt = line[2]
+				similarTrackName = similarTrackName.replace("+"," ").replace("("," ").replace(")"," ").replace("&quot","''").replace("'","''").replace("&amp;","and")
+				similarArtistName = similarArtistName.replace("+"," ").replace("("," ").replace(")"," ").replace("&quot","''").replace("'","''").replace("&amp;","and")
+				try:
+					row = db.executesql('SELECT * FROM lastfm Where Artist=? AND Track LIKE ?', (similarArtistName.decode('utf-8'), "%"+similarTrackName.decode('utf-8')+"%"))
+					if row and session.printrows==[]:
+						row[0] = row[0] + (artistArt,)
+						session.printrows.append(row)
+					if row and not session.printrows==[]:
+						checklines = []
+						for line in session.printrows:
+							checklines.append(int(line[0][0]))
+						if int(row[0][0]) not in checklines:
+							row[0] = row[0] + (artistArt,)
+							print "adding %s" % row
+							session.printrows.append(row)
+					if len(session.printrows) == session.num:
+						break
+				except:
+					print "Issue with %s - %s" % (similarArtistName, similarTrackName)
 		if len(session.printrows) < session.num:
 			print "Finding Similar"
 			mainvar.findSimilar()
-#		print mainvar.session.printrows
 		return session.printrows
 	def findSimilar(self):
 		random.shuffle(session.printrows)
-		print session.printrows
 		artist = session.printrows[0][0][1]
 		song = session.printrows[0][0][2]
 		print "Searching for %s and %s" % (artist,song)
