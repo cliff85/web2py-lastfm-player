@@ -13,25 +13,28 @@ $(document).ready(function(){
 	}, [
 	{{for item in printrows:}}
 		{
-			title:"{{=item[0][2].decode('utf-8')}}",
-			artist:"{{=item[0][1].decode('utf-8')}}",
-			mp3:"{{=URL('stream', vars=dict(path=item[0][3].decode('utf-8')))}}",
-			poster: "{{=item[0][5]}}"
+			title:"{{=item[1]}}",
+			artist:"{{=item[0]}}",
+			mp3:"{{=URL('stream', vars=dict(path=item[2]))}}",
+			poster: "{{=item[3]}}"
 		},
 		{{pass}}
 	],
 	{
 		playlistOptions: {
-			enableRemoveControls: true
+			enableRemoveControls: true,
+			autoPlay: true,
+			shuffleOnLoop: true
 		},
 		swfPath: "js",
 		supplied: "webmv, ogv, m4v, oga, mp3, flac",
 		smoothPlayBar: true,
 		keyEnabled: true,
-		audioFullScreen: true
+		audioFullScreen: true,
+		volume: 0.3,
 	});
-
 });
+
 //]]>
 </script>
 {{end}}
@@ -102,5 +105,4 @@ $(document).ready(function(){
 				</div>
 			</div>
 		</div>
-
-{{=response.toolbar()}}
+		Miaow audio: add <a href="javascript:;" id="playlist-add-bubble">{Bubble}</a>

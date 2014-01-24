@@ -1,8 +1,10 @@
-# -*- coding: utf-8 -*-
+# -*- coding: utf8 -*-
 ##Imports
 import os, os.path
 import random
 import httplib, urllib,urllib2
+import re
+from xml.dom import minidom
 
 """
 To Do:
@@ -13,6 +15,7 @@ To Do:
 -Add User DB to add favorite songs and saved stations
 -Look into how to like songs to lastfm and stream to lastfm (probably will require javascript)
 """
+
 def index():
 	form = SQLFORM.factory(Field('artist',
                                  label='Artist',
@@ -76,50 +79,36 @@ def searchdb(Artist):
 	for row in db(db.lastfm.Artist.like(Artist)).select():
 		artistlist.append(row)
 	return artistlist
-def print_mp3(pattern, dir, files):
-	from gluon.debug import dbg
-	from fnmatch import fnmatch
-	from mutagen.mp3 import MP3
-	import sys
-	row = db.lastfm
-	for filename in files:
-		if not row(Dir=os.path.join(dir, filename)):
-			if fnmatch(filename, pattern):
-				audio = MP3(os.path.join(dir, filename))
-				try:
-					track = audio['TIT2']
-					artist = audio['TPE1']
-				except:
-					print "Missing key:"
-					print os.path.join(dir, filename)
-				try:
-					db.lastfm.insert(Artist=artist.encode('utf-8'), Track=track.encode('utf-8'), Dir=os.path.join(dir, filename))
-					print "adding %s" % os.path.join(dir, filename)
-				except:
-					e = sys.exc_info()[0]
-					print "ERROR: %s" % e
-					print os.path.join(dir, filename)
+
 def files():
-	form = SQLFORM.factory(Field('music_dir',
-                                 label='File Directory',
-                                 requires=IS_NOT_EMPTY()))
+	import scheduler
+	form = SQLFORM.factory(Field('music_dir', label='File Directory', requires=IS_NOT_EMPTY()))
 	if form.process().accepted:
 		session.music_dir = form.vars.music_dir
-		os.path.walk(form.vars.music_dir, print_mp3, '*.mp3')
+		scan_dir.queue_task(dir_scan,pvars=dict(kind="*.mp3", dir=session.music_dir),timeout=5000)
+#		os.path.walk(form.vars.music_dir, print_mp3, '*.mp3')
 	grid = SQLFORM.grid(db.lastfm)
 	return dict(form=form, grid=grid)
-from xml.dom import minidom
+def dir_scan(dir, kind):
+	os.path.walk(dir, print_mp3, kind)
 class Main:
-	def lastfmsearch(self, artist, track):
-		self.artist = artist
-		self.track=track
+	def con_lastfm(self, apiMethod, artist, track=None):
 		apiPath = "http://ws.audioscrobbler.com/2.0/?api_key=9ab0c1e4d83f21270341c70068d02d44"
-		apiMethod = "&method=track.getsimilar"
-		# The url in which to use
-		Base_URL = apiPath + apiMethod + "&artist=" + artist + "&track=" + track.decode('utf-8')
+		self.apiMethod = apiMethod
+		self.artist = artist
+		self.track = track
+		if track:
+			Base_URL = apiPath + apiMethod + "&artist=" + artist + "&track=" + track
+		else:
+			Base_URL = apiPath + apiMethod + "&artist=" + artist
 		WebSock = urllib.urlopen(Base_URL)  # Opens a 'Socket' to URL
 		WebHTML = WebSock.read()            # Reads Contents of URL and saves to Variable
 		WebSock.close()                     # Closes connection to url
+		return WebHTML
+	def lastfmsearch(self, artist, track):
+		self.artist = artist
+		self.track=track
+		WebHTML = mainvar.con_lastfm("&method=track.getsimilar",artist,track)
 		similarTracks = mainvar.xmlparse(WebHTML, "similartracks")
 		random.shuffle(similarTracks)
 		countTracks = len(similarTracks)
@@ -129,16 +118,11 @@ class Main:
 		return similarTracks
 	def addArtistSongs(self, artist):
 		self.artist = artist
-		apiPath = "http://ws.audioscrobbler.com/2.0/?api_key=9ab0c1e4d83f21270341c70068d02d44"
-		apiMethod = "&method=artist.getTopTracks"
-		Base_URL = apiPath + apiMethod + "&artist=" + artist
-		WebSock = urllib.urlopen(Base_URL)  # Opens a 'Socket' to URL
-		WebHTML = WebSock.read()            # Reads Contents of URL and saves to Variable
-		WebSock.close()                     # Closes connection to url
+		WebHTML = mainvar.con_lastfm("&method=artist.getTopTracks",artist)
 		similarTracks = mainvar.xmlparse(WebHTML, "toptracks")
 		random.shuffle(similarTracks)
-		artist = similarTracks[0][1]
-		song = similarTracks[0][0]
+		artist = similarTracks[0][1].encode('utf8')
+		song = similarTracks[0][0].encode('utf8')
 		print "Searching for %s and %s from addArtistSongs" % (artist,song)
 		return mainvar.addSongs(artist,song)
 	def xmlparse(self, xml, xml_attrib):
@@ -148,14 +132,22 @@ class Main:
 		xml_tracks = xml_similarTracks.getElementsByTagName("track")
 		similarTracks = []
 		for track in xml_tracks:
-			xml_trackname = track.getElementsByTagName("name")[0].firstChild.data
+			try:
+				xml_trackname = track.getElementsByTagName("name")[0].firstChild.data
+			except Exception as detail:
+				print detail
+				xml_trackname = re.sub(r'\([^)]*\)', '', xml_trackname)  #deal with ('s
 			xml_artist = track.getElementsByTagName("artist")[0]
 			xml_artistname = xml_artist.getElementsByTagName("name")[0].firstChild.data
 			try:
 				xml_image = track.getElementsByTagName("image")[3].firstChild.data
+			except:
+#				print "Set to default image"
+				xml_image = "http://www.clker.com/cliparts/6/c/1/4/1358105971891943396music_note1-md.png"
+			try:
 				similarTracks.append([xml_trackname, xml_artistname,  xml_image])
 			except:
-				print "Issue with %s" % xml_artistname
+				print "Issue with %s - %s _ %s" % (xml_artistname, xml_trackname, xml_image)
 		return similarTracks
 	def addSongs(self, artist, song):
 		self.artist = artist
@@ -164,40 +156,49 @@ class Main:
 			print "Starting over from addSongs"
 			session.printrows = []
 			mainvar.addSongs(artist,song)
-		print "Searching %s - %s" % (artist, song) 
+		print "Searching %s - %s addSongs" % (artist, song) 
 		for line in mainvar.lastfmsearch(artist,song):
 			if len(line) == 3:
 				similarTrackName = line[0]
 				similarArtistName = line[1]
 				artistArt = line[2]
-				similarTrackName = similarTrackName.replace("+"," ").replace("("," ").replace(")"," ").replace("&quot","''").replace("'","''").replace("&amp;","and")
-				similarArtistName = similarArtistName.replace("+"," ").replace("("," ").replace(")"," ").replace("&quot","''").replace("'","''").replace("&amp;","and")
+				#Remove featured artists and special versions
+				if " feat" in similarTrackName:
+					similarTrackName=" feat".join(similarTrackName.split(' feat')[0:1])
+				if "ft" in similarTrackName:
+					similarTrackName=" ft".join(similarTrackName.split(' ft')[0:1])
+				if " (" in similarTrackName:
+					similarTrackName=" (".join(similarTrackName.split(' (')[0:1])
+				if " [" in similarTrackName:
+					similarTrackName=" [".join(similarTrackName.split(' [')[0:1])
+				if " -" in similarTrackName:
+					similarTrackName=" -".join(similarTrackName.split(' -')[0:1])
+				
 				try:
-					row = db.executesql('SELECT * FROM lastfm Where Artist=? AND Track LIKE ?', (similarArtistName.decode('utf-8'), "%"+similarTrackName.decode('utf-8')+"%"))
-					if row and session.printrows==[]:
-						row[0] = row[0] + (artistArt,)
-						session.printrows.append(row)
-					if row and not session.printrows==[]:
-						checklines = []
-						for line in session.printrows:
-							checklines.append(int(line[0][0]))
-						if int(row[0][0]) not in checklines:
-							row[0] = row[0] + (artistArt,)
-							print "adding %s" % row
-							session.printrows.append(row)
-					if len(session.printrows) == session.num:
-						break
+					similarTrackName = similarTrackName.replace("+"," ").replace("&quot","''").replace("'","''").replace("&amp;","and")
+					similarArtistName = similarArtistName.replace("+"," ").replace("&quot","''").replace("'","''").replace("&amp;","and")
 				except:
-					print "Issue with %s - %s" % (similarArtistName, similarTrackName)
+					similarTrackName[0] = similarTrackName.replace("+"," ").replace("&quot","''").replace("'","''").replace("&amp;","and")
+					similarArtistName[0] = similarArtistName.replace("+"," ").replace("&quot","''").replace("'","''").replace("&amp;","and")
+				row = db((db.lastfm.Artist.contains(similarArtistName.encode('utf8')))&(db.lastfm.Track.contains(similarTrackName.encode('utf8')))).select()
+				if row and session.printrows==[]:
+					session.printrows.append([row[0].Artist, row[0].Track, row[0].Dir, artistArt])
+				if row and not session.printrows==[]:
+					toadd=[row[0].Artist, row[0].Track, row[0].Dir, artistArt]
+					if toadd not in session.printrows:
+						session.printrows.append(toadd)
+				if len(session.printrows) == session.num:
+					break
+		if len(session.printrows) == 0:
+			mainvar.addArtistSongs(artist)
 		if len(session.printrows) < session.num:
 			print "Finding Similar"
 			mainvar.findSimilar()
 		return session.printrows
 	def findSimilar(self):
 		random.shuffle(session.printrows)
-		artist = session.printrows[0][0][1]
-		song = session.printrows[0][0][2]
-		print "Searching for %s and %s" % (artist,song)
+		artist = session.printrows[0][0]
+		song = session.printrows[0][1]
 		mainvar.addSongs(artist,song)	
 global mainvar
 mainvar = Main()	
